@@ -1,0 +1,464 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Feb 18 01:31:28 2017
+
+@author: SUNG ANN LEE
+"""
+import FundamentalAnalysis.CrawlDataFromWeb.FinancialStatement as Crawler
+from pandas.io import sql
+from sqlalchemy import create_engine
+import sqlalchemy
+import pandas as pd
+from time import gmtime, strftime
+import datetime as dt
+import re  # regular expressions
+import requests # interaction with the web
+import io
+from pandas.parser import CParserError
+from lxml import etree
+import time
+from requests.exceptions import ConnectionError
+
+'''
+Get stock price data from yahoo finance
+'''
+def GetTWStockPrice(ID , Start, End ):
+    # search with regular expressions
+    # "CrumbStore":\{"crumb":"(?<crumb>[^"]+)"\}
+    url = 'https://finance.yahoo.com/quote/{0}.TW/history'.format(ID) # url for a ticker symbol, with a download link
+    r = requests.get(url)  # download page
+    txt = r.text # extract html
+    cookie = r.cookies['B'] # the cooke we're looking for is named 'B'
+    # Now we need to extract the token from html. 
+    # the string we need looks like this: "CrumbStore":{"crumb":"lQHxbbYOBCq"}
+    # regular expressions will do the trick!
+    pattern = re.compile('.*"CrumbStore":\{"crumb":"(?P<crumb>[^"]+)"\}')
+    for line in txt.splitlines():
+        m = pattern.match(line)
+        if m is not None:
+            crumb = m.groupdict()['crumb']
+    # start with tuples ...
+    sDate = (int(Start[0:4]),int(Start[4:6]),int(Start[6:8]))
+    eDate = (int(End[0:4]),int(End[4:6]),int(End[6:8]))
+    
+    # prepare input data as a tuple
+    data = (ID,
+            int(dt.datetime(*sDate).timestamp()),
+            int(dt.datetime(*eDate).timestamp()), 
+            crumb
+            )
+    url = "https://query1.finance.yahoo.com/v7/finance/download/{0}.TW?period1={1}&period2={2}&interval=1d&events=history&crumb={3}".format(*data)
+    
+    data = requests.get(url, cookies={'B':cookie})
+    buf = io.StringIO(data.text) # create a buffer
+    df = pd.read_csv(buf,index_col=0) # convert to pandas DataFrame
+    
+    return(df)
+
+def GetTWOStockPrice(ID , Start, End ):
+    # "CrumbStore":\{"crumb":"(?<crumb>[^"]+)"\}
+    url = 'https://finance.yahoo.com/quote/{0}.TWO/history'.format(ID) # url for a ticker symbol, with a download link
+    r = requests.get(url)  # download page
+    txt = r.text # extract html
+    cookie = r.cookies['B'] # the cooke we're looking for is named 'B'
+    # Now we need to extract the token from html. 
+    # the string we need looks like this: "CrumbStore":{"crumb":"lQHxbbYOBCq"}
+    # regular expressions will do the trick!
+    pattern = re.compile('.*"CrumbStore":\{"crumb":"(?P<crumb>[^"]+)"\}')
+    for line in txt.splitlines():
+        m = pattern.match(line)
+        if m is not None:
+            crumb = m.groupdict()['crumb']
+    sDate = (int(Start[0:4]),int(Start[4:6]),int(Start[6:8]))
+    eDate = (int(End[0:4]),int(End[4:6]),int(End[6:8]))
+    
+    # prepare input data as a tuple
+    data = (ID,
+            int(dt.datetime(*sDate).timestamp()),
+            int(dt.datetime(*eDate).timestamp()), 
+            crumb
+            )
+    url = "https://query1.finance.yahoo.com/v7/finance/download/{0}.TWO?period1={1}&period2={2}&interval=1d&events=history&crumb={3}".format(*data)
+    
+    data = requests.get(url, cookies={'B':cookie})
+    buf = io.StringIO(data.text) # create a buffer
+    df = pd.read_csv(buf,index_col=0) # convert to pandas DataFrame
+    
+    return(df)
+
+def GetTWOStkNum():
+    Source = requests.get ('http://isin.twse.com.tw/isin/C_public.jsp?strMode=4') 
+    Source.encoding = 'Big5'
+    
+    
+    Tree = etree.HTML(Source.text)
+    Tree2 = Tree.xpath("/html//table[@class='h4']//tr/td[1]")
+    
+    Stock = []
+    for item in Tree2:
+        Stock.append(item.text)
+    
+    a = [i for i,x in enumerate(Stock) if x == None][2] #第2個None出現
+    b = [i for i,x in enumerate(Stock) if x == None][3] #第3個None出現
+    Temp = Stock[a+1:b]
+    
+    Stk2 = pd.DataFrame({
+                       'StkName':[Temp[i].split('\u3000')[1] for i in range(0,len(Temp))],
+                       'StkNum':[Temp[i].split('\u3000')[0] for i in range(0,len(Temp))]
+                                     },
+                                     dtype=str)
+    return(Stk2.StkNum.tolist())
+
+
+
+class UpdateDataToMySQL:
+
+    def __init__(self,Method = 'replace'):
+        self.Method = Method
+        self.StockID = Crawler.FinancialStatement.StockNumber(KYDelete=False)['StkNum'].replace(' ','',regex=True)
+        
+        ###Cashflow
+    def CashflowTable(self):
+        CashflowEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'cashflow'))
+        CashflowConnection = CashflowEngine.connect()
+        for ID in self.StockID:
+            try:
+                NewCashFlow = Crawler.FinancialStatement(ID).CashFlowTable()
+                #NewCashFlow = NewCashFlow.reset_index(level = 0)
+                
+            except ConnectionError:
+                print('Cashflow \t'+str(ID)+ '\t ConnectionError happend')
+                time.sleep(1)
+                NewCashFlow = Crawler.FinancialStatement(ID).CashFlowTable()
+            
+            else:
+                try:
+                    OldCashFlow = sql.read_sql('select * from '+ '`'+str(ID)+'`' +';',con= CashflowConnection)
+                    #OldCashFlow = sql.read_sql('select * from '+ '`'+str(ID)+'New'+'`' +';',con= CashflowConnection)
+                    CashFlow = OldCashFlow.append(NewCashFlow,sort=True).drop_duplicates('index').sort_values(by='index',ascending=False)
+                    CashFlow.to_sql(name=str(ID)+'new', con=CashflowConnection, if_exists=self.Method, index=False)
+                    
+                except sqlalchemy.exc.ProgrammingError:
+                    print('Cashflow DataBase Do Not Find\t'+str(ID)+ '\tData')
+                    if len(NewCashFlow) is 0:
+                        print(str(ID)+'NewCashFlow is empty')
+                        continue
+                    NewCashFlow.to_sql(name=str(ID)+'new', con=CashflowConnection, if_exists=self.Method, index=False)
+                
+                    
+        CashflowConnection.close()    
+ 
+       ###StockPriceTable
+    def StockPriceTable(self, Start = '20170701', End = strftime("%Y%m%d", gmtime())):
+        
+        StockPriceEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'stockprice'))
+        StockPriceConnection = StockPriceEngine.connect()
+        
+        TWO = GetTWOStkNum()
+        
+        for ID in self.StockID:
+            #time.sleep(randint(1,100)/10)
+            try:
+                if ID in TWO:
+                    NewStockPrice = GetTWOStockPrice(ID,Start,End)
+                else:
+                    NewStockPrice = GetTWStockPrice(ID,Start,End)
+                if NewStockPrice.empty == True:
+                    print(str(ID)+'\t'+'stock price is empty')
+                    continue
+                NewStockPrice.index = [dt.datetime(int(x[0:4]),int(x[5:7]),int(x[8:10])) for x in NewStockPrice.index]
+                print('Get\t'+str(ID)+'\tStock Price')
+                NewStockPrice = NewStockPrice.rename(columns=lambda x: x.replace(' ', ''))
+                NewStockPrice = NewStockPrice.reset_index(level = 0)
+                NewStockPrice.columns.values[0] = 'Date'
+                col = NewStockPrice.columns.values
+                NewStockPrice = NewStockPrice[[col[0],col[1],col[2],col[3],col[4],col[6],col[5]]]
+            except OSError:
+                print(str(ID)+'\t'+'do not Download NewData from yahoo')
+                continue
+            except KeyError:
+                print(str(ID)+'\t'+'do not find in Yahoo')
+                continue
+            except  CParserError:
+                 print('Get\t'+str(ID)+'\tStock Price but Fail 1' )
+                 try:
+                    if ID in TWO:
+                        NewStockPrice = GetTWOStockPrice(ID,Start,End)
+                    else:
+                        NewStockPrice = GetTWStockPrice(ID,Start,End)
+                    if NewStockPrice.empty == True:
+                        print(str(ID)+'\t'+'stock price is empty')
+                        continue
+                    NewStockPrice.index = [dt.datetime(int(x[0:4]),int(x[5:7]),int(x[8:10])) for x in NewStockPrice.index]
+                    print('Get\t'+str(ID)+'\tStock Price')
+                    NewStockPrice = NewStockPrice.rename(columns=lambda x: x.replace(' ', ''))
+                    NewStockPrice = NewStockPrice.reset_index(level = 0)
+                    NewStockPrice.columns.values[0] = 'Date'
+                    col = NewStockPrice.columns.values
+                    NewStockPrice = NewStockPrice[[col[0],col[1],col[2],col[3],col[4],col[6],col[5]]]
+                 except OSError:
+                    print(str(ID)+'\t'+'do not Download NewData from yahoo')
+                    continue
+                 except KeyError:
+                    print(str(ID)+'\t'+'do not find in Yahoo')
+                    continue
+                 except  CParserError:
+                    print('Get\t'+str(ID)+'\tStock Price but Fail 2!!!!!!' )
+                    try:
+                        if ID in TWO:
+                            NewStockPrice = GetTWOStockPrice(ID,Start,End)
+                        else:
+                            NewStockPrice = GetTWStockPrice(ID,Start,End)
+                        if NewStockPrice.empty == True:
+                            print(str(ID)+'\t'+'stock price is empty')
+                            continue
+                        NewStockPrice.index = [dt.datetime(int(x[0:4]),int(x[5:7]),int(x[8:10])) for x in NewStockPrice.index]
+                        print('Get\t'+str(ID)+'\tStock Price')
+                        NewStockPrice = NewStockPrice.rename(columns=lambda x: x.replace(' ', ''))
+                        NewStockPrice = NewStockPrice.reset_index(level = 0)
+                        NewStockPrice.columns.values[0] = 'Date'
+                        col = NewStockPrice.columns.values
+                        NewStockPrice = NewStockPrice[[col[0],col[1],col[2],col[3],col[4],col[6],col[5]]]
+                    except OSError:
+                        print(str(ID)+'\t'+'do not Download NewData from yahoo')
+                        continue
+                    except KeyError:
+                        print(str(ID)+'\t'+'do not find in Yahoo')
+                        continue
+                    except  CParserError:
+                        print('Get\t'+str(ID)+'\tStock Price but Fail 3!!!!!!!!!!!!!' )
+                        try:
+                            if ID in TWO:
+                                NewStockPrice = GetTWOStockPrice(ID,Start,End)
+                            else:
+                                NewStockPrice = GetTWStockPrice(ID,Start,End)
+                            if NewStockPrice.empty == True:
+                                print(str(ID)+'\t'+'stock price is empty')
+                                continue
+                            NewStockPrice.index = [dt.datetime(int(x[0:4]),int(x[5:7]),int(x[8:10])) for x in NewStockPrice.index]
+                            print('Get\t'+str(ID)+'\tStock Price')
+                            NewStockPrice = NewStockPrice.rename(columns=lambda x: x.replace(' ', ''))
+                            NewStockPrice = NewStockPrice.reset_index(level = 0)
+                            NewStockPrice.columns.values[0] = 'Date'
+                            col = NewStockPrice.columns.values
+                            NewStockPrice = NewStockPrice[[col[0],col[1],col[2],col[3],col[4],col[6],col[5]]]
+                        except OSError:
+                            print(str(ID)+'\t'+'do not Download NewData from yahoo')
+                            continue
+                        except KeyError:
+                            print(str(ID)+'\t'+'do not find in Yahoo')
+                            continue
+                        except  CParserError:
+                            print('Get\t'+str(ID)+'\tStock Price but Fail 4!!!!!!!!!!!!!' )
+                            try:
+                                if ID in TWO:
+                                    NewStockPrice = GetTWOStockPrice(ID,Start,End)
+                                else:
+                                    NewStockPrice = GetTWStockPrice(ID,Start,End)
+                                if NewStockPrice.empty == True:
+                                    print(str(ID)+'\t'+'stock price is empty')
+                                    continue
+                                NewStockPrice.index = [dt.datetime(int(x[0:4]),int(x[5:7]),int(x[8:10])) for x in NewStockPrice.index]
+                                print('Get\t'+str(ID)+'\tStock Price')
+                                NewStockPrice = NewStockPrice.rename(columns=lambda x: x.replace(' ', ''))
+                                NewStockPrice = NewStockPrice.reset_index(level = 0)
+                                NewStockPrice.columns.values[0] = 'Date'
+                                col = NewStockPrice.columns.values
+                                NewStockPrice = NewStockPrice[[col[0],col[1],col[2],col[3],col[4],col[6],col[5]]]
+                            except OSError:
+                                print(str(ID)+'\t'+'do not Download NewData from yahoo')
+                                continue
+                            except KeyError:
+                                print(str(ID)+'\t'+'do not find in Yahoo')
+                                continue
+            
+            if len(NewStockPrice) is 0:
+                print(str(ID)+'NewStockPrice is empty')
+            else:
+                try:
+                    OldStockPrice = sql.read_sql('select * from '+ '`'+str(ID)+'`' +';',con= StockPriceConnection)
+                    StockPrice = OldStockPrice.append(NewStockPrice,sort=True).drop_duplicates('Date').sort_values(by='Date',ascending=False)
+                    StockPrice = StockPrice.set_index('Date')
+                    StockPrice = StockPrice.reset_index(level = 0)
+                    StockPrice.to_sql(name=str(ID)+'new', con=StockPriceConnection, if_exists=self.Method, index=False)
+                    
+                except sqlalchemy.exc.ProgrammingError:
+                    print('StockPrice DataBase Do Not Find\t'+str(ID)+ '\tData')
+                    if len(NewStockPrice) is 0:
+                        print(str(ID)+'NewStockPrice is empty')
+                        continue
+                    NewStockPrice.to_sql(name=str(ID)+'new', con=StockPriceConnection, if_exists=self.Method, index=False)
+        StockPriceConnection.close()       
+        
+        
+        ###FinancialRatio
+    def FinancialRatioTable(self):
+        FinancialRatioEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'financialratio'))
+        FinancialRatioConnection = FinancialRatioEngine.connect()
+
+        for ID in self.StockID:
+            NewFinancialRatio = Crawler.FinancialStatement(ID).FinancialRatioTable()
+            #NewFinancialRatio = NewFinancialRatio.reset_index(level = 0)
+            if len(NewFinancialRatio) is 0:
+                print(str(ID)+'NewFinancialRatio is empty')
+            else:
+                try:
+                    OldFinancialRatio = sql.read_sql('select * from '+ '`'+str(ID)+'`' +';',con= FinancialRatioConnection)
+                    FinancialRatio = OldFinancialRatio.append(NewFinancialRatio,sort=True).drop_duplicates('index').sort_values(by='index',ascending=False)
+                    FinancialRatio = FinancialRatio.set_index('index')
+                    FinancialRatio.reset_index(level=0, inplace=True)
+                    FinancialRatio.to_sql(name=str(ID)+'new', con=FinancialRatioConnection, if_exists=self.Method, index=False)
+                except sqlalchemy.exc.ProgrammingError:
+                    print('FinancialRatio DataBase Do Not Find\t'+str(ID)+ '\tData')
+                    if len(NewFinancialRatio) is 0:
+                        print(str(ID)+'NewFinancialRatio is empty')
+                        continue
+                    NewFinancialRatio.to_sql(name=str(ID)+'new', con=FinancialRatioConnection, if_exists=self.Method, index=False)
+            
+        FinancialRatioConnection.close()
+            
+    def InformationAndPEHsitory(self):
+        ###CompanyInformation & PE History
+        for ID in self.StockID:
+            try:
+                [CompanyInformation,PEHistory]= Crawler.FinancialStatement(ID).InformationAndPEHsitory()
+            except ValueError:
+                print('InformationAndPEHsitory has ValueError')
+                continue
+            except IndexError:
+                print('InformationAndPEHistory has IndexError')
+                continue
+            CompanyInformationEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'companyinformation'))
+            CompanyInformationConnection = CompanyInformationEngine.connect()
+            
+            if len(CompanyInformation) is 0:
+                print(str(ID)+'CompanyInformation is empty')
+            else:
+                CompanyInformation.reset_index(level=0, inplace=True)
+                CompanyInformation.to_sql(name=str(ID)+'new', con=CompanyInformationConnection, if_exists=self.Method, index=False)
+                
+            CompanyInformationConnection.close()
+            
+            PEHistoryEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'pehistory'))
+            PEHistoryConnection = PEHistoryEngine.connect()
+            
+            if len(PEHistory) is 0:
+                print(str(ID)+'PEHistory is empty')
+            else:
+                try:
+                    NewPEHistory = PEHistory
+                    NewPEHistory = NewPEHistory.reset_index(level = 0)
+                    
+                    OldPEHistory = sql.read_sql('select * from '+ '`'+str(ID)+'`' +';',con= PEHistoryConnection)
+                    PEHistory = NewPEHistory.append(OldPEHistory,sort=True).drop_duplicates('Year')
+                    PEHistory = PEHistory.set_index("Year")
+                    PEHistory.reset_index(level=0, inplace=True)
+                    PEHistory.to_sql(name=str(ID)+'new', con=PEHistoryConnection, if_exists=self.Method, index=False)
+                    PEHistory.to_sql(name=str(ID)+'new', con=PEHistoryConnection, if_exists='replace', index=False)
+                    
+                except sqlalchemy.exc.ProgrammingError:
+                    print('PEHistory DataBase Do Not Find\t'+str(ID)+ '\tData')
+                    if len(NewPEHistory) is 0:
+                        print(str(ID)+'NewPEHistory is empty')
+                        continue
+                    NewPEHistory.to_sql(name=str(ID)+'new', con=PEHistoryConnection, if_exists=self.Method, index=False)
+      
+            PEHistoryConnection.close()
+            
+            
+        ###MonthlyRevenue
+    def MonthlyRevenueTable(self):
+        MonthlyRevenueEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'monthlyrevenue'))
+        MonthlyRevenueConnection = MonthlyRevenueEngine.connect()
+
+        for ID in self.StockID:
+            NewMonthlyRevenue= Crawler.FinancialStatement(ID).MonthlyRevenueTable()
+            NewMonthlyRevenue = NewMonthlyRevenue.reset_index(level = 0)
+            if len(NewMonthlyRevenue) is 0:
+                print(str(ID)+'NewMonthlyRevenue is empty')
+            else:
+                try:
+                    OldMonthlyRevenue = sql.read_sql('select * from '+ '`'+str(ID)+'`' +';',con= MonthlyRevenueConnection)
+                    MonthlyRevenue = OldMonthlyRevenue.append(NewMonthlyRevenue, sort=True).drop_duplicates('Date').sort_values(by='Date',ascending=False)
+                    MonthlyRevenue = MonthlyRevenue.set_index('Date')
+                    MonthlyRevenue.reset_index(level=0, inplace=True)
+                    MonthlyRevenue.to_sql(name=str(ID)+'new', con=MonthlyRevenueConnection, if_exists=self.Method, index=False)
+                except sqlalchemy.exc.ProgrammingError:
+                    print('MonthlyRevenue DataBase Do Not Find\t'+str(ID)+ '\tData')
+                    if len(NewMonthlyRevenue) is 0:
+                        print(str(ID)+'NewMonthlyRevenue is empty')
+                        continue
+                    NewMonthlyRevenue.to_sql(name=str(ID)+'new', con=MonthlyRevenueConnection, if_exists=self.Method, index=False)
+        
+        MonthlyRevenueConnection.close()
+        
+        ###Performance
+    def PerformanceTable(self):
+        
+        PerformanceEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'performance'))
+        PerformanceConnection = PerformanceEngine.connect()
+
+        for ID in self.StockID:
+            NewPerformance= Crawler.FinancialStatement(ID).PerformanceTable()
+            NewPerformance = NewPerformance.reset_index(level = 0)
+            if len(NewPerformance) is 0:
+                print(str(ID)+'NewPerformance is empty')
+            else:
+                try:
+                    OldPerformance = sql.read_sql('select * from '+ '`'+str(ID)+'`' +';',con= PerformanceConnection)
+                    Performance = OldPerformance.append(NewPerformance,sort=True).drop_duplicates('Date').sort_values(by='Date',ascending=False)
+                    #Performance = Performance.set_index('Date')
+                    Performance.to_sql(name=str(ID)+'new', con=PerformanceConnection, if_exists=self.Method, index=False)
+                except sqlalchemy.exc.ProgrammingError:
+                    print('Performance DataBase Do Not Find\t'+str(ID)+ '\tData')
+                    if len(NewPerformance) is 0:
+                        print(str(ID)+'NewFinancialRatio is empty')
+                        continue
+                    NewPerformance.to_sql(name=str(ID)+'new', con=PerformanceConnection, if_exists=self.Method, index=False) 
+                
+        PerformanceConnection.close()
+        
+        ###Profitability
+    def ProfitabilityTable(self):
+        ProfitabilityEngine = create_engine("mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4".format('root', 'PASSWORD', '127.0.0.1', 'profitability'))
+        ProfitabilityConnection = ProfitabilityEngine.connect()
+
+        for ID in self.StockID:
+            try:
+                NewProfitability= Crawler.FinancialStatement(ID).ProfitabilityTable()
+                NewProfitability = NewProfitability.reset_index(level = 0)
+            except ConnectionError:
+                print('First Fail Connection')
+                NewProfitability= Crawler.FinancialStatement(ID).ProfitabilityTable()
+                NewProfitability = NewProfitability.reset_index(level = 0)
+                
+            if len(NewProfitability) is 0:
+                print(str(ID)+'NewProfitability is empty')
+            else:
+                try:
+                    OldProfitability = sql.read_sql('select * from '+ '`'+str(ID)+'`' +';',con= ProfitabilityConnection)
+                    Profitability = OldProfitability.append(NewProfitability,sort=True)
+                    Profitability.Date = Profitability.Date.astype(int)
+                    Profitability = Profitability.drop_duplicates('Date').sort_values(by='Date',ascending=False)
+                    Profitability = Profitability.set_index('Date')
+                    Profitability.reset_index(level=0, inplace=True)
+                    
+                    Profitability.to_sql(name=str(ID)+'new', con=ProfitabilityConnection, if_exists=self.Method, index=False)
+                    
+                except sqlalchemy.exc.ProgrammingError:
+                    print('Profitability DataBase Do Not Find\t'+str(ID)+ '\tData')
+                    if len(NewProfitability) is 0:
+                        print(str(ID)+'NewFinancialRatio is empty')
+                        continue
+                    NewProfitability.to_sql(name=str(ID)+'new', con=ProfitabilityConnection, if_exists=self.Method, index=False)                    
+        
+        ProfitabilityConnection.close()
+        
+    def __str__(self):
+        
+        return(print('Use\t'+str(self.Method)+'\tMethod'))
+            
+            
+            
+            
+            
