@@ -2,6 +2,7 @@
   分析的股票為所有台灣上市櫃公司，其中包含爬取所有上市櫃公司股票、更新資料庫(MySQL)、參數調整、合理股價估值、選股策略。
 
 主要分為以下幾個部分:
+
 •	CrawlDataFromWeb --- 其中包含FinancialStatement.py與UpdateDataToMySQL.py這兩個檔案
     (1) 「FinancialStatement.py」可以將目前台灣股市上市上櫃的代碼從 http://isin.twse.com.tw/isin/C_public.jsp?strMode=2 爬取下來，並利用這個代碼        到 http://jsjustweb.jihsun.com.tw/z/zc/zce/zce_%s.djhtm 爬取所有相應的公司財務報表，包括損益表、獲利能力指標、月營收、現金流量等。
     (2) 「UpdateDataToMySQL.py」將抓下來的最新財報資料與我MySQL資料庫中的歷史資料合併與統一格式，其中包括每日股價的抓取，上市公司從                          https://finance.yahoo.com/quote/{0}.TW/history 抓取，上櫃公司從 https://finance.yahoo.com/quote/{0}.TWO/history 抓取。
