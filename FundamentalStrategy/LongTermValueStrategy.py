@@ -5,19 +5,7 @@ Created on Tue Feb 28 19:06:34 2017
 @author: SUNG ANN LEE
 """
 
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Feb 23 15:34:45 2017
 
-@author: SUNG ANN LEE
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Feb 16 13:46:31 2017
-
-@author: SUNG ANN LEE
-"""
 
 import FundamentalAnalysis.CrawlDataFromWeb.FinancialStatement as Crawler 
 import FundamentalAnalysis.CrawlDataFromWeb.UpdateDataToMySQL as UpdateData
